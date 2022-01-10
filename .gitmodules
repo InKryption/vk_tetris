@@ -1,0 +1,6 @@
+[submodule "dep/vulkan-zig"]
+	path = dep/vulkan-zig
+	url = https://github.com/Snektron/vulkan-zig.git
+[submodule "dep/mach"]
+	path = dep/mach
+	url = https://github.com/hexops/mach.git
