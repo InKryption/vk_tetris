@@ -347,6 +347,7 @@ fn selectQueueFamilies(
 
         const present_support: bool = (try idispatch.getPhysicalDeviceSurfaceSupportKHR(physical_device, index, surface)) == vk.TRUE;
         const graphics_support: bool = qfamily_properties.queue_flags.graphics_bit;
+
         if (graphics_support and present_support) {
             selected_indices.set(.graphics, index);
             selected_indices.set(.present, index);
