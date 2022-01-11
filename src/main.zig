@@ -7,8 +7,8 @@ const debug = std.debug;
 
 const assert = debug.assert;
 
-const glfw = @import("mach-glfw");
 const vk = @import("vulkan");
+const glfw = @import("mach-glfw");
 
 pub fn main() !void {
     var gpa_state = heap.GeneralPurposeAllocator(.{}){};
@@ -88,7 +88,9 @@ const VulkanBase = struct {
         self: @This(),
         vk_allocator: ?*const vk.AllocationCallbacks,
     ) void {
-        self.instance.deinit(vk_allocator);
+        defer self.instance.deinit(vk_allocator);
+        defer self.instance.d.destroySurfaceKHR(self.instance.h, self.surface, vk_allocator);
+        defer self.device.deinit(vk_allocator);
     }
 
     pub const Instance = struct {
@@ -114,6 +116,7 @@ const VulkanBase = struct {
         ) !@This() {
             const BaseDispatch = vk.BaseWrapper(vk.BaseCommandFlags{
                 .createInstance = true,
+                .enumerateInstanceLayerProperties = true,
             });
             const base_dispatch = try BaseDispatch.load(loader);
 
@@ -130,6 +133,52 @@ const VulkanBase = struct {
             const enabled_layers: []const [*:0]const u8 = enabled_layers: {
                 var enabled_layers = std.ArrayList([*:0]const u8).init(allocator);
                 errdefer enabled_layers.deinit();
+
+                const desired_layers: []const [:0]const u8 = desired_layers: {
+                    var desired_layers = std.ArrayList([:0]const u8).init(allocator);
+                    errdefer desired_layers.deinit();
+
+                    try desired_layers.append("VK_LAYER_KHRONOS_validation");
+
+                    break :desired_layers desired_layers.toOwnedSlice();
+                };
+                defer allocator.free(desired_layers);
+
+                const available_layers: []const vk.LayerProperties = available_layers: {
+                    var count: u32 = undefined;
+                    assert(base_dispatch.enumerateInstanceLayerProperties(&count, null) catch unreachable == .success);
+
+                    const slice = try allocator.alloc(vk.LayerProperties, count);
+                    errdefer allocator.free(slice);
+
+                    assert(base_dispatch.enumerateInstanceLayerProperties(&count, slice.ptr) catch unreachable == .success);
+                    assert(count == slice.len);
+
+                    break :available_layers slice;
+                };
+                defer allocator.free(available_layers);
+
+                try enabled_layers.ensureTotalCapacityPrecise(available_layers.len);
+                outer: for (desired_layers) |desired| {
+                    for (available_layers) |available| {
+                        if (desired.len > available.layer_name.len) {
+                            const err_msg = "Desired layer name '{s}' is longer than the maximum layer name length '{}'";
+                            log.err(err_msg, .{ desired, available.layer_name.len });
+                            return error.NameOverlong;
+                        }
+                        if (mem.eql(u8, desired, available.layer_name[0..desired.len])) {
+                            enabled_layers.appendAssumeCapacity(desired);
+                            continue :outer;
+                        }
+                    } else {
+                        log.err("Instance Layer with name '{s}' could not be found.", .{desired});
+                        return error.LayerUnavailable;
+                    }
+                }
+
+                // for (available_layers) |al| {
+                //     debug.print("{s}\n", .{al.layer_name[0..]});
+                // }
 
                 break :enabled_layers enabled_layers.toOwnedSlice();
             };
