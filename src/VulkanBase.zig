@@ -17,10 +17,15 @@ qfi: QueueFamilyIndices,
 device: Device,
 
 pub fn init(
-    allocator: mem.Allocator,
+    child_allocator: mem.Allocator,
     vk_allocator: ?*const vk.AllocationCallbacks,
     window: glfw.Window,
 ) !VulkanBase {
+    var arena_state = heap.ArenaAllocator.init(child_allocator);
+    defer arena_state.deinit();
+
+    const allocator = arena_state.allocator();
+
     const instance: Instance = try Instance.init(allocator, struct {
         fn loader(instance: vk.Instance, proc_name: [*:0]const u8) ?glfw.VKProc {
             return glfw.getInstanceProcAddress(@intToPtr(?*anyopaque, @enumToInt(instance)), proc_name);

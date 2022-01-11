@@ -13,7 +13,7 @@ const glfw = @import("mach-glfw");
 const VulkanBase = @import("VulkanBase.zig");
 
 pub fn main() !void {
-    var gpa_state = heap.GeneralPurposeAllocator(.{}){};
+    var gpa_state = heap.GeneralPurposeAllocator(.{ .verbose_log = true }){};
     defer _ = gpa_state.deinit();
 
     const allocator: mem.Allocator = gpa_state.allocator();
