@@ -1,6 +1,7 @@
 const std = @import("std");
 const log = std.log;
 const mem = std.mem;
+const heap = std.heap;
 const debug = std.debug;
 
 const assert = debug.assert;
@@ -66,6 +67,12 @@ pub fn deinit(
     defer self.device.deinit(vk_allocator);
 }
 
+pub const QueueFamilyIndices = std.enums.EnumArray(QueueFamilyIndexName, u32);
+pub const QueueFamilyIndexName = enum {
+    graphics,
+    present,
+};
+
 pub const Instance = struct {
     h: vk.Instance,
     d: VTable,
@@ -87,55 +94,103 @@ pub const Instance = struct {
         loader: anytype,
         vk_allocator: ?*const vk.AllocationCallbacks,
     ) !@This() {
+        var arena_state = heap.ArenaAllocator.init(allocator);
+        defer arena_state.deinit();
+
+        const arena_allocator = arena_state.allocator();
+
         const BaseDispatch = vk.BaseWrapper(vk.BaseCommandFlags{
             .createInstance = true,
             .enumerateInstanceLayerProperties = true,
+            .enumerateInstanceExtensionProperties = true,
         });
         const base_dispatch = try BaseDispatch.load(loader);
 
         const enabled_extensions: []const [*:0]const u8 = enabled_extensions: {
-            var enabled_extensions = std.ArrayList([*:0]const u8).init(allocator);
+            var enabled_extensions = std.ArrayList([*:0]const u8).init(arena_allocator);
             errdefer enabled_extensions.deinit();
 
-            try enabled_extensions.appendSlice(try glfw.getRequiredInstanceExtensions());
+            const desired_extensions: []const [*:0]const u8 = desired_extensions: {
+                var desired_extensions = std.ArrayList([*:0]const u8).init(arena_allocator);
+                errdefer desired_extensions.deinit();
+
+                try desired_extensions.appendSlice(try glfw.getRequiredInstanceExtensions());
+
+                break :desired_extensions desired_extensions.toOwnedSlice();
+            };
+            defer arena_allocator.free(desired_extensions);
+
+            const available_extensions: []const vk.ExtensionProperties = available_extensions: {
+                var count: u32 = undefined;
+                assert(base_dispatch.enumerateInstanceExtensionProperties(null, &count, null) catch unreachable == .success);
+
+                const slice = try arena_allocator.alloc(vk.ExtensionProperties, count);
+                errdefer arena_allocator.free(slice);
+
+                assert(base_dispatch.enumerateInstanceExtensionProperties(null, &count, slice.ptr) catch unreachable == .success);
+                assert(count == slice.len);
+
+                break :available_extensions slice;
+            };
+            defer arena_allocator.free(available_extensions);
+
+            try enabled_extensions.ensureTotalCapacityPrecise(available_extensions.len);
+            outer: for (desired_extensions) |desired_ptr| {
+                const desired = mem.span(desired_ptr);
+                for (available_extensions) |available| {
+                    if (desired.len > available.extension_name.len) {
+                        const err_msg = "Desired Instance Extension name '{s}' is longer than the maximum layer name length '{}'";
+                        log.err(err_msg, .{ desired, available.extension_name.len });
+                        return error.NameOverlong;
+                    }
+                    if (mem.eql(u8, desired, available.extension_name[0..desired.len])) {
+                        enabled_extensions.appendAssumeCapacity(desired);
+                        continue :outer;
+                    }
+                } else {
+                    log.err("Instance Extension with name '{s}' could not be found.", .{desired});
+                    return error.LayerUnavailable;
+                }
+            }
 
             break :enabled_extensions enabled_extensions.toOwnedSlice();
         };
-        defer allocator.free(enabled_extensions);
+        defer arena_allocator.free(enabled_extensions);
 
         const enabled_layers: []const [*:0]const u8 = enabled_layers: {
-            var enabled_layers = std.ArrayList([*:0]const u8).init(allocator);
+            var enabled_layers = std.ArrayList([*:0]const u8).init(arena_allocator);
             errdefer enabled_layers.deinit();
 
-            const desired_layers: []const [:0]const u8 = desired_layers: {
-                var desired_layers = std.ArrayList([:0]const u8).init(allocator);
+            const desired_layers: []const [*:0]const u8 = desired_layers: {
+                var desired_layers = std.ArrayList([*:0]const u8).init(arena_allocator);
                 errdefer desired_layers.deinit();
 
                 try desired_layers.append("VK_LAYER_KHRONOS_validation");
 
                 break :desired_layers desired_layers.toOwnedSlice();
             };
-            defer allocator.free(desired_layers);
+            defer arena_allocator.free(desired_layers);
 
             const available_layers: []const vk.LayerProperties = available_layers: {
                 var count: u32 = undefined;
                 assert(base_dispatch.enumerateInstanceLayerProperties(&count, null) catch unreachable == .success);
 
-                const slice = try allocator.alloc(vk.LayerProperties, count);
-                errdefer allocator.free(slice);
+                const slice = try arena_allocator.alloc(vk.LayerProperties, count);
+                errdefer arena_allocator.free(slice);
 
                 assert(base_dispatch.enumerateInstanceLayerProperties(&count, slice.ptr) catch unreachable == .success);
                 assert(count == slice.len);
 
                 break :available_layers slice;
             };
-            defer allocator.free(available_layers);
+            defer arena_allocator.free(available_layers);
 
             try enabled_layers.ensureTotalCapacityPrecise(available_layers.len);
-            outer: for (desired_layers) |desired| {
+            outer: for (desired_layers) |desired_ptr| {
+                const desired = mem.span(desired_ptr);
                 for (available_layers) |available| {
                     if (desired.len > available.layer_name.len) {
-                        const err_msg = "Desired layer name '{s}' is longer than the maximum layer name length '{}'";
+                        const err_msg = "Desired Instance Layer name '{s}' is longer than the maximum layer name length '{}'";
                         log.err(err_msg, .{ desired, available.layer_name.len });
                         return error.NameOverlong;
                     }
@@ -155,7 +210,7 @@ pub const Instance = struct {
 
             break :enabled_layers enabled_layers.toOwnedSlice();
         };
-        defer allocator.free(enabled_layers);
+        defer arena_allocator.free(enabled_layers);
 
         const handle: vk.Instance = try base_dispatch.createInstance(&vk.InstanceCreateInfo{
             .flags = vk.InstanceCreateFlags{},
@@ -195,12 +250,6 @@ pub const Instance = struct {
     ) void {
         self.d.destroyInstance(self.h, vk_allocator);
     }
-};
-
-pub const QueueFamilyIndices = std.enums.EnumArray(QueueFamilyIndexName, u32);
-pub const QueueFamilyIndexName = enum {
-    graphics,
-    present,
 };
 
 pub const Device = struct {
