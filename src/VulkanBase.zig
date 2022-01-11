@@ -158,6 +158,9 @@ pub const Instance = struct {
         defer arena_allocator.free(enabled_extensions);
 
         const enabled_layers: []const [*:0]const u8 = enabled_layers: {
+            // If not in debug, return no layers
+            if (@import("builtin").mode != .Debug) break :enabled_layers &.{};
+
             var enabled_layers = std.ArrayList([*:0]const u8).init(arena_allocator);
             errdefer enabled_layers.deinit();
 
