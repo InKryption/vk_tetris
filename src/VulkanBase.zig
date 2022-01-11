@@ -8,7 +8,7 @@ const assert = debug.assert;
 const vk = @import("vulkan");
 const glfw = @import("mach-glfw");
 
-const Self = @This();
+const VulkanBase = @This();
 instance: Instance,
 physical_device: vk.PhysicalDevice,
 surface: vk.SurfaceKHR,
@@ -19,7 +19,7 @@ pub fn init(
     allocator: mem.Allocator,
     vk_allocator: ?*const vk.AllocationCallbacks,
     window: glfw.Window,
-) !@This() {
+) !VulkanBase {
     const instance: Instance = try Instance.init(allocator, struct {
         fn loader(instance: vk.Instance, proc_name: [*:0]const u8) ?glfw.VKProc {
             return glfw.getInstanceProcAddress(@intToPtr(?*anyopaque, @enumToInt(instance)), proc_name);
@@ -48,7 +48,7 @@ pub fn init(
     );
     errdefer device.deinit(vk_allocator);
 
-    return @This(){
+    return VulkanBase{
         .instance = instance,
         .physical_device = physical_device,
         .surface = surface,
@@ -58,7 +58,7 @@ pub fn init(
 }
 
 pub fn deinit(
-    self: @This(),
+    self: VulkanBase,
     vk_allocator: ?*const vk.AllocationCallbacks,
 ) void {
     defer self.instance.deinit(vk_allocator);
