@@ -263,81 +263,6 @@ fn createInstance(
     };
 }
 
-fn createDevice(
-    allocator: mem.Allocator,
-    idispatch: Instance.VTable,
-    physical_device: vk.PhysicalDevice,
-    loader: anytype,
-    qfi: QueueFamilyIndices,
-    vk_allocator: ?*const vk.AllocationCallbacks,
-) !Device {
-    const enabled_extensions: []const [*:0]const u8 = enabled_extensions: {
-        var enabled_extensions = std.ArrayList([*:0]const u8).init(allocator);
-
-        try enabled_extensions.append(vk.extension_info.khr_swapchain.name.ptr);
-
-        break :enabled_extensions enabled_extensions.toOwnedSlice();
-    };
-    defer allocator.free(enabled_extensions);
-
-    const queue_create_infos: []const vk.DeviceQueueCreateInfo = queue_create_infos: {
-        var queue_create_infos = std.ArrayList(vk.DeviceQueueCreateInfo).init(allocator);
-        errdefer queue_create_infos.deinit();
-
-        const queue_priorities_per_family: []const f32 = &.{1.0};
-
-        try queue_create_infos.append(vk.DeviceQueueCreateInfo{
-            .flags = vk.DeviceQueueCreateFlags{},
-            .queue_family_index = qfi.get(.graphics),
-
-            .queue_count = @intCast(u32, queue_priorities_per_family.len),
-            .p_queue_priorities = queue_priorities_per_family.ptr,
-        });
-        if (qfi.get(.present) != qfi.get(.graphics)) {
-            try queue_create_infos.append(vk.DeviceQueueCreateInfo{
-                .flags = vk.DeviceQueueCreateFlags{},
-                .queue_family_index = qfi.get(.present),
-
-                .queue_count = @intCast(u32, queue_priorities_per_family.len),
-                .p_queue_priorities = queue_priorities_per_family.ptr,
-            });
-        }
-
-        break :queue_create_infos queue_create_infos.toOwnedSlice();
-    };
-    defer allocator.free(queue_create_infos);
-
-    const handle = try idispatch.createDevice(physical_device, &vk.DeviceCreateInfo{
-        .flags = vk.DeviceCreateFlags{},
-
-        .queue_create_info_count = @intCast(u32, queue_create_infos.len),
-        .p_queue_create_infos = queue_create_infos.ptr,
-
-        .enabled_layer_count = 0,
-        .pp_enabled_layer_names = undefined,
-
-        .enabled_extension_count = @intCast(u32, enabled_extensions.len),
-        .pp_enabled_extension_names = enabled_extensions.ptr,
-
-        .p_enabled_features = @as(?*const vk.PhysicalDeviceFeatures, null),
-    }, vk_allocator);
-
-    const vtable: Device.VTable = Device.VTable.load(handle, loader) catch |err| {
-        const MinVTable = vk.DeviceWrapper(.{ .destroyDevice = true });
-        if (MinVTable.load(handle, loader)) |min| {
-            min.destroyDevice(handle, vk_allocator);
-        } else |_| {
-            log.err("Failed to load function to destroy device before encountering error '{s}'.", .{@errorName(err)});
-        }
-        return err;
-    };
-
-    return Device{
-        .h = handle,
-        .d = vtable,
-    };
-}
-
 fn selectPhysicalDevice(
     allocator: mem.Allocator,
     instance: Instance,
@@ -417,4 +342,79 @@ fn selectQueueFamilies(
     }
 
     return result;
+}
+
+fn createDevice(
+    allocator: mem.Allocator,
+    idispatch: Instance.VTable,
+    physical_device: vk.PhysicalDevice,
+    loader: anytype,
+    qfi: QueueFamilyIndices,
+    vk_allocator: ?*const vk.AllocationCallbacks,
+) !Device {
+    const enabled_extensions: []const [*:0]const u8 = enabled_extensions: {
+        var enabled_extensions = std.ArrayList([*:0]const u8).init(allocator);
+
+        try enabled_extensions.append(vk.extension_info.khr_swapchain.name.ptr);
+
+        break :enabled_extensions enabled_extensions.toOwnedSlice();
+    };
+    defer allocator.free(enabled_extensions);
+
+    const queue_create_infos: []const vk.DeviceQueueCreateInfo = queue_create_infos: {
+        var queue_create_infos = std.ArrayList(vk.DeviceQueueCreateInfo).init(allocator);
+        errdefer queue_create_infos.deinit();
+
+        const queue_priorities_per_family: []const f32 = &.{1.0};
+
+        try queue_create_infos.append(vk.DeviceQueueCreateInfo{
+            .flags = vk.DeviceQueueCreateFlags{},
+            .queue_family_index = qfi.get(.graphics),
+
+            .queue_count = @intCast(u32, queue_priorities_per_family.len),
+            .p_queue_priorities = queue_priorities_per_family.ptr,
+        });
+        if (qfi.get(.present) != qfi.get(.graphics)) {
+            try queue_create_infos.append(vk.DeviceQueueCreateInfo{
+                .flags = vk.DeviceQueueCreateFlags{},
+                .queue_family_index = qfi.get(.present),
+
+                .queue_count = @intCast(u32, queue_priorities_per_family.len),
+                .p_queue_priorities = queue_priorities_per_family.ptr,
+            });
+        }
+
+        break :queue_create_infos queue_create_infos.toOwnedSlice();
+    };
+    defer allocator.free(queue_create_infos);
+
+    const handle = try idispatch.createDevice(physical_device, &vk.DeviceCreateInfo{
+        .flags = vk.DeviceCreateFlags{},
+
+        .queue_create_info_count = @intCast(u32, queue_create_infos.len),
+        .p_queue_create_infos = queue_create_infos.ptr,
+
+        .enabled_layer_count = 0,
+        .pp_enabled_layer_names = undefined,
+
+        .enabled_extension_count = @intCast(u32, enabled_extensions.len),
+        .pp_enabled_extension_names = enabled_extensions.ptr,
+
+        .p_enabled_features = @as(?*const vk.PhysicalDeviceFeatures, null),
+    }, vk_allocator);
+
+    const vtable: Device.VTable = Device.VTable.load(handle, loader) catch |err| {
+        const MinVTable = vk.DeviceWrapper(.{ .destroyDevice = true });
+        if (MinVTable.load(handle, loader)) |min| {
+            min.destroyDevice(handle, vk_allocator);
+        } else |_| {
+            log.err("Failed to load function to destroy device before encountering error '{s}'.", .{@errorName(err)});
+        }
+        return err;
+    };
+
+    return Device{
+        .h = handle,
+        .d = vtable,
+    };
 }
