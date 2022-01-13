@@ -26,12 +26,12 @@ pub fn init(
 
     const allocator = arena_state.allocator();
 
-    const instance: Instance = try Instance.init(allocator, struct {
+    const instance: Instance = try createInstance(allocator, struct {
         fn loader(instance: vk.Instance, proc_name: [*:0]const u8) ?glfw.VKProc {
             return glfw.getInstanceProcAddress(@intToPtr(?*anyopaque, @enumToInt(instance)), proc_name);
         }
     }.loader, vk_allocator);
-    errdefer instance.deinit(vk_allocator);
+    errdefer instance.d.destroyInstance(instance.h, vk_allocator);
 
     const physical_device: vk.PhysicalDevice = try selectPhysicalDevice(allocator, instance);
 
@@ -44,7 +44,7 @@ pub fn init(
 
     const qfi: QueueFamilyIndices = try selectQueueFamilies(allocator, instance.d, physical_device, surface);
 
-    const device: Device = try Device.init(
+    const device: Device = try createDevice(
         allocator,
         instance.d,
         physical_device,
@@ -52,7 +52,7 @@ pub fn init(
         qfi,
         vk_allocator,
     );
-    errdefer device.deinit(vk_allocator);
+    errdefer device.d.destroyDevice(device.h, vk_allocator);
 
     return VulkanBase{
         .instance = instance,
@@ -67,9 +67,9 @@ pub fn deinit(
     self: VulkanBase,
     vk_allocator: ?*const vk.AllocationCallbacks,
 ) void {
-    defer self.instance.deinit(vk_allocator);
+    defer self.instance.d.destroyInstance(self.instance.h, vk_allocator);
     defer self.instance.d.destroySurfaceKHR(self.instance.h, self.surface, vk_allocator);
-    defer self.device.deinit(vk_allocator);
+    defer self.device.d.destroyDevice(self.device.h, vk_allocator);
 }
 
 pub const QueueFamilyIndices = std.enums.EnumArray(QueueFamilyIndexName, u32);
@@ -93,171 +93,6 @@ pub const Instance = struct {
         .createDevice = true,
         .destroySurfaceKHR = true,
     });
-
-    fn init(
-        allocator: mem.Allocator,
-        loader: anytype,
-        vk_allocator: ?*const vk.AllocationCallbacks,
-    ) !@This() {
-        var arena_state = heap.ArenaAllocator.init(allocator);
-        defer arena_state.deinit();
-
-        const arena_allocator = arena_state.allocator();
-
-        const BaseDispatch = vk.BaseWrapper(vk.BaseCommandFlags{
-            .createInstance = true,
-            .enumerateInstanceLayerProperties = true,
-            .enumerateInstanceExtensionProperties = true,
-        });
-        const base_dispatch = try BaseDispatch.load(loader);
-
-        const enabled_extensions: []const [*:0]const u8 = enabled_extensions: {
-            var enabled_extensions = std.ArrayList([*:0]const u8).init(arena_allocator);
-            errdefer enabled_extensions.deinit();
-
-            const desired_extensions: []const [*:0]const u8 = desired_extensions: {
-                var desired_extensions = std.ArrayList([*:0]const u8).init(arena_allocator);
-                errdefer desired_extensions.deinit();
-
-                try desired_extensions.appendSlice(try glfw.getRequiredInstanceExtensions());
-
-                break :desired_extensions desired_extensions.toOwnedSlice();
-            };
-            defer arena_allocator.free(desired_extensions);
-
-            const available_extensions: []const vk.ExtensionProperties = available_extensions: {
-                var count: u32 = undefined;
-                assert(base_dispatch.enumerateInstanceExtensionProperties(null, &count, null) catch unreachable == .success);
-
-                const slice = try arena_allocator.alloc(vk.ExtensionProperties, count);
-                errdefer arena_allocator.free(slice);
-
-                assert(base_dispatch.enumerateInstanceExtensionProperties(null, &count, slice.ptr) catch unreachable == .success);
-                assert(count == slice.len);
-
-                break :available_extensions slice;
-            };
-            defer arena_allocator.free(available_extensions);
-
-            try enabled_extensions.ensureTotalCapacityPrecise(available_extensions.len);
-            outer: for (desired_extensions) |desired_ptr| {
-                const desired = mem.span(desired_ptr);
-                for (available_extensions) |available| {
-                    if (desired.len > available.extension_name.len) {
-                        const err_msg = "Desired Instance Extension name '{s}' is longer than the maximum layer name length '{}'";
-                        log.err(err_msg, .{ desired, available.extension_name.len });
-                        return error.NameOverlong;
-                    }
-                    if (mem.eql(u8, desired, available.extension_name[0..desired.len])) {
-                        enabled_extensions.appendAssumeCapacity(desired);
-                        continue :outer;
-                    }
-                } else {
-                    log.err("Instance Extension with name '{s}' could not be found.", .{desired});
-                    return error.LayerUnavailable;
-                }
-            }
-
-            break :enabled_extensions enabled_extensions.toOwnedSlice();
-        };
-        defer arena_allocator.free(enabled_extensions);
-
-        const enabled_layers: []const [*:0]const u8 = enabled_layers: {
-            // If not in debug, return no layers
-            if (@import("builtin").mode != .Debug) break :enabled_layers &.{};
-
-            var enabled_layers = std.ArrayList([*:0]const u8).init(arena_allocator);
-            errdefer enabled_layers.deinit();
-
-            const desired_layers: []const [*:0]const u8 = desired_layers: {
-                var desired_layers = std.ArrayList([*:0]const u8).init(arena_allocator);
-                errdefer desired_layers.deinit();
-
-                try desired_layers.append("VK_LAYER_KHRONOS_validation");
-
-                break :desired_layers desired_layers.toOwnedSlice();
-            };
-            defer arena_allocator.free(desired_layers);
-
-            const available_layers: []const vk.LayerProperties = available_layers: {
-                var count: u32 = undefined;
-                assert(base_dispatch.enumerateInstanceLayerProperties(&count, null) catch unreachable == .success);
-
-                const slice = try arena_allocator.alloc(vk.LayerProperties, count);
-                errdefer arena_allocator.free(slice);
-
-                assert(base_dispatch.enumerateInstanceLayerProperties(&count, slice.ptr) catch unreachable == .success);
-                assert(count == slice.len);
-
-                break :available_layers slice;
-            };
-            defer arena_allocator.free(available_layers);
-
-            try enabled_layers.ensureTotalCapacityPrecise(available_layers.len);
-            outer: for (desired_layers) |desired_ptr| {
-                const desired = mem.span(desired_ptr);
-                for (available_layers) |available| {
-                    if (desired.len > available.layer_name.len) {
-                        const err_msg = "Desired Instance Layer name '{s}' is longer than the maximum layer name length '{}'";
-                        log.err(err_msg, .{ desired, available.layer_name.len });
-                        return error.NameOverlong;
-                    }
-                    if (mem.eql(u8, desired, available.layer_name[0..desired.len])) {
-                        enabled_layers.appendAssumeCapacity(desired);
-                        continue :outer;
-                    }
-                } else {
-                    log.err("Instance Layer with name '{s}' could not be found.", .{desired});
-                    return error.LayerUnavailable;
-                }
-            }
-
-            // for (available_layers) |al| {
-            //     debug.print("{s}\n", .{al.layer_name[0..]});
-            // }
-
-            break :enabled_layers enabled_layers.toOwnedSlice();
-        };
-        defer arena_allocator.free(enabled_layers);
-
-        const handle: vk.Instance = try base_dispatch.createInstance(&vk.InstanceCreateInfo{
-            .flags = vk.InstanceCreateFlags{},
-            .p_application_info = &vk.ApplicationInfo{
-                .p_application_name = "vk_tetris",
-                .application_version = vk.makeApiVersion(0, 0, 0, 0),
-                .p_engine_name = null,
-                .engine_version = vk.makeApiVersion(0, 0, 0, 0),
-                .api_version = vk.API_VERSION_1_2,
-            },
-
-            .enabled_layer_count = @intCast(u32, enabled_layers.len),
-            .pp_enabled_layer_names = enabled_layers.ptr,
-
-            .enabled_extension_count = @intCast(u32, enabled_extensions.len),
-            .pp_enabled_extension_names = enabled_extensions.ptr,
-        }, vk_allocator);
-
-        const vtable: VTable = VTable.load(handle, loader) catch |err| {
-            const MinVTable = vk.InstanceWrapper(.{ .destroyInstance = true });
-            if (MinVTable.load(handle, loader)) |min| {
-                min.destroyInstance(handle, vk_allocator);
-            } else |_| {
-                log.err("Failed to load function to destroy instance before encountering error '{s}'.", .{@errorName(err)});
-            }
-            return err;
-        };
-
-        return @This(){
-            .h = handle,
-            .d = vtable,
-        };
-    }
-    fn deinit(
-        self: @This(),
-        vk_allocator: ?*const vk.AllocationCallbacks,
-    ) void {
-        self.d.destroyInstance(self.h, vk_allocator);
-    }
 };
 
 pub const Device = struct {
@@ -267,88 +102,241 @@ pub const Device = struct {
     pub const VTable = vk.DeviceWrapper(.{
         .destroyDevice = true,
     });
+};
 
-    fn init(
-        allocator: mem.Allocator,
-        idispatch: Instance.VTable,
-        physical_device: vk.PhysicalDevice,
-        loader: anytype,
-        qfi: QueueFamilyIndices,
-        vk_allocator: ?*const vk.AllocationCallbacks,
-    ) !@This() {
-        const enabled_extensions: []const [*:0]const u8 = enabled_extensions: {
-            var enabled_extensions = std.ArrayList([*:0]const u8).init(allocator);
+fn createInstance(
+    allocator: mem.Allocator,
+    loader: anytype,
+    vk_allocator: ?*const vk.AllocationCallbacks,
+) !Instance {
+    var arena_state = heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
 
-            try enabled_extensions.append(vk.extension_info.khr_swapchain.name.ptr);
+    const arena_allocator = arena_state.allocator();
 
-            break :enabled_extensions enabled_extensions.toOwnedSlice();
+    const BaseDispatch = vk.BaseWrapper(vk.BaseCommandFlags{
+        .createInstance = true,
+        .enumerateInstanceLayerProperties = true,
+        .enumerateInstanceExtensionProperties = true,
+    });
+    const base_dispatch = try BaseDispatch.load(loader);
+
+    const enabled_extensions: []const [*:0]const u8 = enabled_extensions: {
+        var enabled_extensions = std.ArrayList([*:0]const u8).init(arena_allocator);
+        errdefer enabled_extensions.deinit();
+
+        const desired_extensions: []const [*:0]const u8 = desired_extensions: {
+            var desired_extensions = std.ArrayList([*:0]const u8).init(arena_allocator);
+            errdefer desired_extensions.deinit();
+
+            try desired_extensions.appendSlice(try glfw.getRequiredInstanceExtensions());
+
+            break :desired_extensions desired_extensions.toOwnedSlice();
         };
-        defer allocator.free(enabled_extensions);
+        defer arena_allocator.free(desired_extensions);
 
-        const queue_create_infos: []const vk.DeviceQueueCreateInfo = queue_create_infos: {
-            var queue_create_infos = std.ArrayList(vk.DeviceQueueCreateInfo).init(allocator);
-            errdefer queue_create_infos.deinit();
+        const available_extensions: []const vk.ExtensionProperties = available_extensions: {
+            var count: u32 = undefined;
+            assert(base_dispatch.enumerateInstanceExtensionProperties(null, &count, null) catch unreachable == .success);
 
-            const queue_priorities_per_family: []const f32 = &.{1.0};
+            const slice = try arena_allocator.alloc(vk.ExtensionProperties, count);
+            errdefer arena_allocator.free(slice);
 
+            assert(base_dispatch.enumerateInstanceExtensionProperties(null, &count, slice.ptr) catch unreachable == .success);
+            assert(count == slice.len);
+
+            break :available_extensions slice;
+        };
+        defer arena_allocator.free(available_extensions);
+
+        try enabled_extensions.ensureTotalCapacityPrecise(available_extensions.len);
+        outer: for (desired_extensions) |desired_ptr| {
+            const desired = mem.span(desired_ptr);
+            for (available_extensions) |available| {
+                if (desired.len > available.extension_name.len) {
+                    const err_msg = "Desired Instance Extension name '{s}' is longer than the maximum layer name length '{}'";
+                    log.err(err_msg, .{ desired, available.extension_name.len });
+                    return error.NameOverlong;
+                }
+                if (mem.eql(u8, desired, available.extension_name[0..desired.len])) {
+                    enabled_extensions.appendAssumeCapacity(desired);
+                    continue :outer;
+                }
+            } else {
+                log.err("Instance Extension with name '{s}' could not be found.", .{desired});
+                return error.LayerUnavailable;
+            }
+        }
+
+        break :enabled_extensions enabled_extensions.toOwnedSlice();
+    };
+    defer arena_allocator.free(enabled_extensions);
+
+    const enabled_layers: []const [*:0]const u8 = enabled_layers: {
+        // If not in debug, return no layers
+        if (@import("builtin").mode != .Debug) break :enabled_layers &.{};
+
+        var enabled_layers = std.ArrayList([*:0]const u8).init(arena_allocator);
+        errdefer enabled_layers.deinit();
+
+        const desired_layers: []const [*:0]const u8 = desired_layers: {
+            var desired_layers = std.ArrayList([*:0]const u8).init(arena_allocator);
+            errdefer desired_layers.deinit();
+
+            try desired_layers.append("VK_LAYER_KHRONOS_validation");
+
+            break :desired_layers desired_layers.toOwnedSlice();
+        };
+        defer arena_allocator.free(desired_layers);
+
+        const available_layers: []const vk.LayerProperties = available_layers: {
+            var count: u32 = undefined;
+            assert(base_dispatch.enumerateInstanceLayerProperties(&count, null) catch unreachable == .success);
+
+            const slice = try arena_allocator.alloc(vk.LayerProperties, count);
+            errdefer arena_allocator.free(slice);
+
+            assert(base_dispatch.enumerateInstanceLayerProperties(&count, slice.ptr) catch unreachable == .success);
+            assert(count == slice.len);
+
+            break :available_layers slice;
+        };
+        defer arena_allocator.free(available_layers);
+
+        try enabled_layers.ensureTotalCapacityPrecise(available_layers.len);
+        outer: for (desired_layers) |desired_ptr| {
+            const desired = mem.span(desired_ptr);
+            for (available_layers) |available| {
+                if (desired.len > available.layer_name.len) {
+                    const err_msg = "Desired Instance Layer name '{s}' is longer than the maximum layer name length '{}'";
+                    log.err(err_msg, .{ desired, available.layer_name.len });
+                    return error.NameOverlong;
+                }
+                if (mem.eql(u8, desired, available.layer_name[0..desired.len])) {
+                    enabled_layers.appendAssumeCapacity(desired);
+                    continue :outer;
+                }
+            } else {
+                log.err("Instance Layer with name '{s}' could not be found.", .{desired});
+                return error.LayerUnavailable;
+            }
+        }
+
+        // for (available_layers) |al| {
+        //     debug.print("{s}\n", .{al.layer_name[0..]});
+        // }
+
+        break :enabled_layers enabled_layers.toOwnedSlice();
+    };
+    defer arena_allocator.free(enabled_layers);
+
+    const handle: vk.Instance = try base_dispatch.createInstance(&vk.InstanceCreateInfo{
+        .flags = vk.InstanceCreateFlags{},
+        .p_application_info = &vk.ApplicationInfo{
+            .p_application_name = "vk_tetris",
+            .application_version = vk.makeApiVersion(0, 0, 0, 0),
+            .p_engine_name = null,
+            .engine_version = vk.makeApiVersion(0, 0, 0, 0),
+            .api_version = vk.API_VERSION_1_2,
+        },
+
+        .enabled_layer_count = @intCast(u32, enabled_layers.len),
+        .pp_enabled_layer_names = enabled_layers.ptr,
+
+        .enabled_extension_count = @intCast(u32, enabled_extensions.len),
+        .pp_enabled_extension_names = enabled_extensions.ptr,
+    }, vk_allocator);
+
+    const vtable: Instance.VTable = Instance.VTable.load(handle, loader) catch |err| {
+        const MinVTable = vk.InstanceWrapper(.{ .destroyInstance = true });
+        if (MinVTable.load(handle, loader)) |min| {
+            min.destroyInstance(handle, vk_allocator);
+        } else |_| {
+            log.err("Failed to load function to destroy instance before encountering error '{s}'.", .{@errorName(err)});
+        }
+        return err;
+    };
+
+    return Instance{
+        .h = handle,
+        .d = vtable,
+    };
+}
+
+fn createDevice(
+    allocator: mem.Allocator,
+    idispatch: Instance.VTable,
+    physical_device: vk.PhysicalDevice,
+    loader: anytype,
+    qfi: QueueFamilyIndices,
+    vk_allocator: ?*const vk.AllocationCallbacks,
+) !Device {
+    const enabled_extensions: []const [*:0]const u8 = enabled_extensions: {
+        var enabled_extensions = std.ArrayList([*:0]const u8).init(allocator);
+
+        try enabled_extensions.append(vk.extension_info.khr_swapchain.name.ptr);
+
+        break :enabled_extensions enabled_extensions.toOwnedSlice();
+    };
+    defer allocator.free(enabled_extensions);
+
+    const queue_create_infos: []const vk.DeviceQueueCreateInfo = queue_create_infos: {
+        var queue_create_infos = std.ArrayList(vk.DeviceQueueCreateInfo).init(allocator);
+        errdefer queue_create_infos.deinit();
+
+        const queue_priorities_per_family: []const f32 = &.{1.0};
+
+        try queue_create_infos.append(vk.DeviceQueueCreateInfo{
+            .flags = vk.DeviceQueueCreateFlags{},
+            .queue_family_index = qfi.get(.graphics),
+
+            .queue_count = @intCast(u32, queue_priorities_per_family.len),
+            .p_queue_priorities = queue_priorities_per_family.ptr,
+        });
+        if (qfi.get(.present) != qfi.get(.graphics)) {
             try queue_create_infos.append(vk.DeviceQueueCreateInfo{
                 .flags = vk.DeviceQueueCreateFlags{},
-                .queue_family_index = qfi.get(.graphics),
+                .queue_family_index = qfi.get(.present),
 
                 .queue_count = @intCast(u32, queue_priorities_per_family.len),
                 .p_queue_priorities = queue_priorities_per_family.ptr,
             });
-            if (qfi.get(.present) != qfi.get(.graphics)) {
-                try queue_create_infos.append(vk.DeviceQueueCreateInfo{
-                    .flags = vk.DeviceQueueCreateFlags{},
-                    .queue_family_index = qfi.get(.present),
+        }
 
-                    .queue_count = @intCast(u32, queue_priorities_per_family.len),
-                    .p_queue_priorities = queue_priorities_per_family.ptr,
-                });
-            }
+        break :queue_create_infos queue_create_infos.toOwnedSlice();
+    };
+    defer allocator.free(queue_create_infos);
 
-            break :queue_create_infos queue_create_infos.toOwnedSlice();
-        };
-        defer allocator.free(queue_create_infos);
+    const handle = try idispatch.createDevice(physical_device, &vk.DeviceCreateInfo{
+        .flags = vk.DeviceCreateFlags{},
 
-        const handle = try idispatch.createDevice(physical_device, &vk.DeviceCreateInfo{
-            .flags = vk.DeviceCreateFlags{},
+        .queue_create_info_count = @intCast(u32, queue_create_infos.len),
+        .p_queue_create_infos = queue_create_infos.ptr,
 
-            .queue_create_info_count = @intCast(u32, queue_create_infos.len),
-            .p_queue_create_infos = queue_create_infos.ptr,
+        .enabled_layer_count = 0,
+        .pp_enabled_layer_names = undefined,
 
-            .enabled_layer_count = 0,
-            .pp_enabled_layer_names = undefined,
+        .enabled_extension_count = @intCast(u32, enabled_extensions.len),
+        .pp_enabled_extension_names = enabled_extensions.ptr,
 
-            .enabled_extension_count = @intCast(u32, enabled_extensions.len),
-            .pp_enabled_extension_names = enabled_extensions.ptr,
+        .p_enabled_features = @as(?*const vk.PhysicalDeviceFeatures, null),
+    }, vk_allocator);
 
-            .p_enabled_features = @as(?*const vk.PhysicalDeviceFeatures, null),
-        }, vk_allocator);
+    const vtable: Device.VTable = Device.VTable.load(handle, loader) catch |err| {
+        const MinVTable = vk.DeviceWrapper(.{ .destroyDevice = true });
+        if (MinVTable.load(handle, loader)) |min| {
+            min.destroyDevice(handle, vk_allocator);
+        } else |_| {
+            log.err("Failed to load function to destroy device before encountering error '{s}'.", .{@errorName(err)});
+        }
+        return err;
+    };
 
-        const vtable: VTable = VTable.load(handle, loader) catch |err| {
-            const MinVTable = vk.DeviceWrapper(.{ .destroyDevice = true });
-            if (MinVTable.load(handle, loader)) |min| {
-                min.destroyDevice(handle, vk_allocator);
-            } else |_| {
-                log.err("Failed to load function to destroy device before encountering error '{s}'.", .{@errorName(err)});
-            }
-            return err;
-        };
-
-        return @This(){
-            .h = handle,
-            .d = vtable,
-        };
-    }
-    fn deinit(
-        self: @This(),
-        vk_allocator: ?*const vk.AllocationCallbacks,
-    ) void {
-        self.d.destroyDevice(self.h, vk_allocator);
-    }
-};
+    return Device{
+        .h = handle,
+        .d = vtable,
+    };
+}
 
 fn selectPhysicalDevice(
     allocator: mem.Allocator,
