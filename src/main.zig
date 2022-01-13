@@ -10,6 +10,8 @@ const assert = debug.assert;
 const vk = @import("vulkan");
 const glfw = @import("mach-glfw");
 
+const shaders = @import("shaders.zig");
+
 const VulkanBase = @import("VulkanBase.zig");
 const VulkanSwapchain = @import("VulkanSwapchain.zig");
 
@@ -17,7 +19,10 @@ pub fn main() !void {
     var gpa_state = heap.GeneralPurposeAllocator(.{ .verbose_log = true }){};
     defer _ = gpa_state.deinit();
 
-    const allocator: mem.Allocator = gpa_state.allocator();
+    var arena_allocator_state = heap.ArenaAllocator.init(gpa_state.allocator());
+    defer arena_allocator_state.deinit();
+
+    const allocator: mem.Allocator = arena_allocator_state.allocator();
     _ = allocator;
 
     try glfw.init(.{});
@@ -33,8 +38,8 @@ pub fn main() !void {
     const vk_base = try VulkanBase.init(allocator, vk_allocator, window);
     defer vk_base.deinit(vk_allocator);
 
-    const vk_swapchain = try VulkanSwapchain.init(allocator, vk_base, window, vk_allocator);
-    defer vk_swapchain.deinit(vk_base, vk_allocator);
+    var vk_swapchain = try VulkanSwapchain.init(allocator, vk_base, window, vk_allocator);
+    defer vk_swapchain.deinit(allocator, vk_base, vk_allocator);
 
     while (!window.shouldClose()) {
         glfw.pollEvents() catch unreachable;

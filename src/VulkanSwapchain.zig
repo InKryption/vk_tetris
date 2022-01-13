@@ -17,6 +17,7 @@ capabilities: vk.SurfaceCapabilitiesKHR,
 surface_format: vk.SurfaceFormatKHR,
 present_mode: vk.PresentModeKHR,
 extent: vk.Extent2D,
+images: ImageHandleAndView.MultiSlice,
 
 pub fn init(
     child_allocator: mem.Allocator,
@@ -107,22 +108,46 @@ pub fn init(
     }, vk_allocator);
     errdefer vk_base.device.d.destroySwapchainKHR(vk_base.device.h, handle, vk_allocator);
 
+    var images: ImageHandleAndView.MultiArrayList = try createImageAndHandleViewMultiArrayList(
+        child_allocator,
+        vk_base,
+        handle,
+        surface_format,
+        vk_allocator,
+    );
+    errdefer {
+        destroyImageViews(vk_base, images.items(.view), vk_allocator);
+        images.deinit(child_allocator);
+    }
+
     return VulkanSwapchain{
         .handle = handle,
         .capabilities = capabilities,
         .surface_format = surface_format,
         .present_mode = present_mode,
         .extent = extent,
+        .images = images.toOwnedSlice(),
     };
 }
 
 pub fn deinit(
-    self: VulkanSwapchain,
+    self: *VulkanSwapchain,
+    allocator: mem.Allocator,
     vk_base: VulkanBase,
     vk_allocator: ?*const vk.AllocationCallbacks,
 ) void {
+    destroyImageViews(vk_base, self.images.items(.view), vk_allocator);
+    self.images.deinit(allocator);
     vk_base.device.d.destroySwapchainKHR(vk_base.device.h, self.handle, vk_allocator);
 }
+
+pub const ImageHandleAndView = struct {
+    handle: vk.Image,
+    view: vk.ImageView,
+
+    pub const MultiArrayList = std.MultiArrayList(ImageHandleAndView);
+    pub const MultiSlice = MultiArrayList.Slice;
+};
 
 fn selectSurfaceFormat(surface_formats: []const vk.SurfaceFormatKHR) vk.SurfaceFormatKHR {
     for (surface_formats) |surface_format| {
@@ -162,4 +187,84 @@ fn selectImageCount(capabilities: vk.SurfaceCapabilitiesKHR) u32 {
     const min = capabilities.min_image_count;
     const max = if (capabilities.max_image_count == 0) math.maxInt(u32) else capabilities.max_image_count;
     return math.clamp(min + 1, min, max);
+}
+
+fn createImageAndHandleViewMultiArrayList(
+    allocator: mem.Allocator,
+    vk_base: VulkanBase,
+    swapchain_handle: vk.SwapchainKHR,
+    surface_format: vk.SurfaceFormatKHR,
+    vk_allocator: ?*const vk.AllocationCallbacks,
+) !ImageHandleAndView.MultiArrayList {
+    var result = ImageHandleAndView.MultiArrayList{};
+
+    populate_handles: {
+        var count: u32 = undefined;
+        assert(vk_base.device.d.getSwapchainImagesKHR(
+            vk_base.device.h,
+            swapchain_handle,
+            &count,
+            null,
+        ) catch unreachable == .success);
+
+        try result.resize(allocator, count);
+        assert(vk_base.device.d.getSwapchainImagesKHR(
+            vk_base.device.h,
+            swapchain_handle,
+            &count,
+            result.items(.handle).ptr,
+        ) catch unreachable == .success);
+
+        break :populate_handles;
+    }
+
+    const slice = result.slice();
+    for (slice.items(.handle)) |handle, i| {
+        const create_info = vk.ImageViewCreateInfo{
+            .flags = vk.ImageViewCreateFlags{},
+            .image = handle,
+            .view_type = .@"2d",
+            .format = surface_format.format,
+            .components = vk.ComponentMapping{
+                .r = .identity,
+                .g = .identity,
+                .b = .identity,
+                .a = .identity,
+            },
+            .subresource_range = vk.ImageSubresourceRange{
+                .aspect_mask = vk.ImageAspectFlags{ .color_bit = true },
+                .base_mip_level = 0,
+                .level_count = 1,
+                .base_array_layer = 0,
+                .layer_count = 1,
+            },
+        };
+
+        slice.items(.view)[i] = vk_base.device.d.createImageView(
+            vk_base.device.h,
+            &create_info,
+            vk_allocator,
+        ) catch |err| {
+            for (slice.items(.view)[0..i]) |created_view| {
+                vk_base.device.d.destroyImageView(vk_base.device.h, created_view, vk_allocator);
+            }
+            return err;
+        };
+    }
+
+    return result;
+}
+
+fn destroyImageViews(
+    vk_base: VulkanBase,
+    views: []const vk.ImageView,
+    vk_allocator: ?*const vk.AllocationCallbacks,
+) void {
+    for (views) |view| {
+        vk_base.device.d.destroyImageView(
+            vk_base.device.h,
+            view,
+            vk_allocator,
+        );
+    }
 }

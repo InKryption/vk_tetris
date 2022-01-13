@@ -106,8 +106,13 @@ pub const Device = struct {
     pub const VTable = vk.DeviceWrapper(.{
         .destroyDevice = true,
 
+        .createImageView = true,
+        .destroyImageView = true,
+
         .createSwapchainKHR = true,
         .destroySwapchainKHR = true,
+
+        .getSwapchainImagesKHR = true,
     });
 };
 
