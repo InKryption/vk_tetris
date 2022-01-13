@@ -91,7 +91,11 @@ pub const Instance = struct {
         .getPhysicalDeviceSurfaceSupportKHR = true,
 
         .createDevice = true,
+
         .destroySurfaceKHR = true,
+        .getPhysicalDeviceSurfaceCapabilitiesKHR = true,
+        .getPhysicalDeviceSurfaceFormatsKHR = true,
+        .getPhysicalDeviceSurfacePresentModesKHR = true,
     });
 };
 
@@ -101,6 +105,9 @@ pub const Device = struct {
 
     pub const VTable = vk.DeviceWrapper(.{
         .destroyDevice = true,
+
+        .createSwapchainKHR = true,
+        .destroySwapchainKHR = true,
     });
 };
 
