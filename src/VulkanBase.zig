@@ -340,7 +340,6 @@ fn selectQueueFamilies(
         };
         result.set(queue_name, selected_index);
     }
-
     return result;
 }
 
